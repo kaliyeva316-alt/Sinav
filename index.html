@@ -63,6 +63,7 @@ const err = x => ({
 
 const LET = 'ABCDE', NOPT = 5; // variant sayı
 const fmt = ts => ts && ts.toDate ? ts.toDate().toLocaleString('az-AZ', {day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit'}) : '—';
+const commonOf = t => t.commonImgs || (t.commonImg ? [t.commonImg] : []); // köhnə testlərlə uyğunluq
 
 let me = null, pendingName = '';
 const top = t => h('div', {class: 'bar'}, h('b', t), h('span', {}, me.name + ' ', h('button', {class: 'sm', onclick: () => signOut(auth)}, 'Çıxış')));
@@ -89,7 +90,7 @@ const imgEl = id => {
   getDoc(doc(db, 'images', id)).then(s => { if (s.exists()) i.src = s.data().data; }).catch(() => {});
   return i;
 };
-// Şəkil seçmə düyməsi: r.img sahəsinə yazır, [file, düymə, önizləmə] qaytarır
+// Tək şəkil seçici (hər sual üçün): r.img sahəsinə yazır
 const imgPicker = (label, r) => {
   const prev = h('div');
   const file = h('input', {type: 'file', accept: 'image/*', style: 'display:none', onchange: async e => {
@@ -103,6 +104,23 @@ const imgPicker = (label, r) => {
       r.img = null;
       prev.replaceChildren(h('small', {class: 'err'}, 'Şəkil yüklənmədi, başqa şəkil seçin'));
     }
+  }});
+  return [file, h('button', {class: 'sm', onclick: () => file.click()}, label), prev];
+};
+// Çoxlu şəkil seçici (ümumi şəkillər üçün): list massivinə yazır
+const multiPicker = (label, list) => {
+  const prev = h('div');
+  const draw = () => prev.replaceChildren(...list.map((d, i) => h('div', {},
+    h('img', {class: 'qimg', src: d}),
+    h('button', {class: 'sm', onclick: () => { list.splice(i, 1); draw(); }}, 'Şəkli sil'))));
+  const file = h('input', {type: 'file', accept: 'image/*', multiple: '', style: 'display:none', onchange: async e => {
+    const fs = [...e.target.files]; if (!fs.length) return;
+    prev.append(h('small', 'Şəkillər hazırlanır...'));
+    for (const f of fs) {
+      try { list.push(await shrink(f)); }
+      catch (x) { alert('Bu şəkil yüklənmədi: ' + f.name); }
+    }
+    file.value = ''; draw();
   }});
   return [file, h('button', {class: 'sm', onclick: () => file.click()}, label), prev];
 };
@@ -198,8 +216,9 @@ async function takeTest(id, t) {
     left.textContent = `${Math.floor(r / 60)}:${String(r % 60).padStart(2, '0')}`;
     if (r <= 0) send();
   }, 500);
+  const common = commonOf(t);
   show(h('div', {class: 'bar sticky'}, h('b', t.title), left),
-    ...(t.commonImg ? [h('div', {class: 'card'}, h('small', 'Aşağıdakı suallar bu şəkilə aiddir'), imgEl(t.commonImg))] : []),
+    ...(common.length ? [h('div', {class: 'card'}, h('small', 'Aşağıdakı suallar bu şəkillərə aiddir'), common.map(imgEl))] : []),
     ...qs,
     h('button', {onclick: () => confirm('Cavablar göndərilsin?') && send()}, 'Bitir və göndər'));
 }
@@ -222,7 +241,7 @@ function editor() {
   const title = h('input', {placeholder: 'Test adı'}), dur = h('input', {type: 'number', placeholder: 'Müddət (dəqiqə)', value: 30});
   const openIn = h('input', {type: 'datetime-local'}), closeIn = h('input', {type: 'datetime-local'});
   const box = h('div'), rows = [];
-  const cm = {img: null}; // ümumi şəkil
+  const commonList = []; // ümumi şəkillər (çoxlu)
   const add = type => {
     const q = h('textarea', {rows: 2, placeholder: 'Sual mətni (şəkil əlavə edirsinizsə, boş qala bilər)'}), pts = h('input', {type: 'number', value: 1, min: 0, style: 'width:80px'});
     const opts = type == 'mc' ? [...Array(NOPT).keys()].map(i => h('input', {placeholder: 'Variant ' + LET[i]})) : [];
@@ -242,7 +261,7 @@ function editor() {
     saving = true;
     try {
       const up = img => img ? addDoc(collection(db, 'images'), {data: img, createdAt: serverTimestamp()}).then(d => d.id) : null;
-      const [commonId, ...ids] = await Promise.all([up(cm.img), ...rows.map(r => up(r.img))]);
+      const [commonIds, ids] = await Promise.all([Promise.all(commonList.map(up)), Promise.all(rows.map(r => up(r.img)))]);
       const qs = rows.map((r, i) => ({
         type: r.type, text: r.q.value.trim(), points: +r.pts.value || 0,
         ...(ids[i] ? {img: ids[i]} : {}),
@@ -250,7 +269,7 @@ function editor() {
       }));
       const ref = await addDoc(collection(db, 'tests'), {
         title: title.value.trim(), durationMin: Math.round(+dur.value) || 30, questions: qs,
-        openAt: op, closeAt: cl, ...(commonId ? {commonImg: commonId} : {}),
+        openAt: op, closeAt: cl, ...(commonIds.length ? {commonImgs: commonIds} : {}),
         published: false, createdAt: serverTimestamp()
       });
       await setDoc(doc(db, 'answerKeys', ref.id), {correct: Object.fromEntries(rows.map((r, i) => r.type == 'mc' ? [i, +r.cor.value] : null).filter(Boolean))});
@@ -264,9 +283,9 @@ function editor() {
   show(top('Yeni test'), h('div', {class: 'card'}, title, dur,
       h('div', {}, h('small', 'Giriş vaxtı (bu saatdan əvvəl açılmır, boş = məhdudiyyət yoxdur)')), openIn,
       h('div', {}, h('small', 'Çıxış vaxtı (bu saatdan sonra bağlanır, boş = məhdudiyyət yoxdur)')), closeIn),
-    h('div', {class: 'card'}, h('b', 'Ümumi şəkil (bütün suallara aid)'),
-      h('div', {}, h('small', 'İstəyə bağlı. Şagird şəkli testin yuxarısında görür.')),
-      ...imgPicker('📷 Ümumi şəkil əlavə et', cm)),
+    h('div', {class: 'card'}, h('b', 'Ümumi şəkillər (bütün suallara aid)'),
+      h('div', {}, h('small', 'İstəyə bağlı. İstədiyin qədər şəkil əlavə edə bilərsən, bir neçəsini birdən də seçmək olur. Şagird bunları testin yuxarısında görür.')),
+      ...multiPicker('📷 Ümumi şəkil əlavə et', commonList)),
     box,
     h('button', {class: 'sm', onclick: () => add('mc')}, '+ Test sualı'), h('button', {class: 'sm', onclick: () => add('open')}, '+ Açıq sual'),
     h('div', {}, h('button', {onclick: save}, 'Saxla'), h('button', {class: 'sm', onclick: adminHome}, 'Ləğv et')));
@@ -275,8 +294,9 @@ function editor() {
 async function results(id, t) {
   const [k, a] = await Promise.all([getDoc(doc(db, 'answerKeys', id)), getDocs(query(collection(db, 'attempts'), where('testId', '==', id)))]);
   const key = k.data()?.correct || {}, max = t.questions.reduce((s, q) => s + q.points, 0);
+  const common = commonOf(t);
   show(top(t.title), h('button', {class: 'sm', onclick: adminHome}, 'Geri'),
-    ...(t.commonImg ? [h('div', {class: 'card'}, h('small', 'Ümumi şəkil'), imgEl(t.commonImg))] : []),
+    ...(common.length ? [h('div', {class: 'card'}, h('small', 'Ümumi şəkillər'), common.map(imgEl))] : []),
     ...(a.empty ? [h('p', 'Hələ heç kim başlamayıb.')] : a.docs.map(d => {
       const r = d.data(), ans = r.answers || {}, inputs = {};
       let mc = 0; t.questions.forEach((q, i) => { if (q.type == 'mc' && ans[i] === key[i]) mc += q.points; });

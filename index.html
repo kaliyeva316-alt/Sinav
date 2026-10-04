@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="az">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>İmtahan sistemi</title>
+<style>
+:root{--bg:#eef2f5;--c:#fff;--t:#14212b;--m:#5d6c78;--a:#1f6f8b;--b:#d3dce3;--e:#c0392b}
+@media(prefers-color-scheme:dark){:root{--bg:#0f161c;--c:#18222b;--t:#e6edf2;--m:#93a3b0;--a:#5cb6d3;--b:#2a3844;--e:#ff7b6b}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--t);font:16px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
+#app{max-width:640px;margin:0 auto;padding:10px 12px 40px}
+.card,.bar{background:var(--c);border:1px solid var(--b);border-radius:10px;padding:14px;margin:10px 0}
+.bar{display:flex;gap:8px;align-items:center;justify-content:space-between}
+.sticky{position:sticky;top:6px;z-index:5}
+input,textarea,select{width:100%;padding:10px;margin:5px 0;border:1px solid var(--b);border-radius:8px;background:var(--bg);color:var(--t);font:inherit}
+button{background:var(--a);color:var(--bg);border:0;border-radius:8px;padding:11px 16px;font:inherit;font-weight:600;margin:4px 6px 4px 0;cursor:pointer}
+button.sm{background:none;color:var(--a);border:1px solid var(--a);padding:6px 12px;font-weight:500}
+:focus-visible{outline:2px solid var(--a);outline-offset:2px}
+.opt{display:flex;gap:10px;align-items:center;padding:7px 0}
+.opt input{width:auto;margin:0}
+.err{color:var(--e)}
+.timer{font-size:1.5rem;font-weight:700;font-variant-numeric:tabular-nums}
+.ans{border-top:1px solid var(--b);padding-top:8px;margin-top:8px}
+small,p{color:var(--m)}
+p{margin:6px 0;white-space:pre-wrap}
+h2{margin:4px 0 10px}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script type="module">
+import {initializeApp} from "https://www.gstatic.com/firebasejs/12.19.0/firebase-app.js";
+import {getAuth,onAuthStateChanged,createUserWithEmailAndPassword,signInWithEmailAndPassword,signOut} from "https://www.gstatic.com/firebasejs/12.19.0/firebase-auth.js";
+import {getFirestore,doc,getDoc,setDoc,addDoc,updateDoc,collection,query,where,getDocs,serverTimestamp} from "https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyDT_cbQnNDAlNJI3ff_BnNJZldaF41v5M4",
+  authDomain: "kubra-755c5.firebaseapp.com",
+  projectId: "kubra-755c5",
+  storageBucket: "kubra-755c5.firebasestorage.app",
+  messagingSenderId: "814832414341",
+  appId: "1:814832414341:web:4ff9e62e328792b10a43ec"
+};
+const app0 = initializeApp(firebaseConfig), auth = getAuth(app0), db = getFirestore(app0);
+
+const app = document.getElementById('app');
+const show = (...n) => app.replaceChildren(...n);
+const h = (t, a, ...c) => {
+  const e = document.createElement(t);
+  if (a && a.constructor === Object) { for (const k in a) k.startsWith('on') ? e.addEventListener(k.slice(2), a[k]) : e.setAttribute(k, a[k]); }
+  else c.unshift(a);
+  c.flat(9).forEach(x => { if (x || x === 0) e.append(x); });
+  return e;
+};
+const err = x => ({
+  'auth/invalid-credential': 'E-poçt və ya şifrə yanlışdır',
+  'auth/email-already-in-use': 'Bu e-poçt artıq qeydiyyatdadır',
+  'auth/weak-password': 'Şifrə ən azı 6 simvol olmalıdır',
+  'auth/invalid-email': 'E-poçt düzgün deyil'
+}[x.code] || x.code || x.message);
+
+let me = null, pendingName = '';
+const top = t => h('div', {class: 'bar'}, h('b', t), h('span', {}, me.name + ' ', h('button', {class: 'sm', onclick: () => signOut(auth)}, 'Çıxış')));
+
+/* ---------- Giriş / qeydiyyat ---------- */
+function authView(reg = false) {
+  const n = h('input', {placeholder: 'Ad Soyad', style: reg ? '' : 'display:none'});
+  const e = h('input', {type: 'email', placeholder: 'E-poçt'});
+  const p = h('input', {type: 'password', placeholder: 'Şifrə (min. 6 simvol)'});
+  const m = h('p', {class: 'err'});
+  const go = async () => {
+    try {
+      if (reg) {
+        if (!n.value.trim()) return m.textContent = 'Adınızı yazın';
+        pendingName = n.value.trim();
+        const c = await createUserWithEmailAndPassword(auth, e.value, p.value);
+        await setDoc(doc(db, 'users', c.user.uid), {name: pendingName});
+      } else await signInWithEmailAndPassword(auth, e.value, p.value);
+    } catch (x) { m.textContent = err(x); }
+  };
+  show(h('div', {class: 'card'}, h('h2', 'İmtahan sistemi'), n, e, p,
+    h('button', {onclick: go}, reg ? 'Qeydiyyatdan keç' : 'Daxil ol'), m,
+    h('a', {href: '#', onclick: v => { v.preventDefault(); authView(!reg); }}, reg ? 'Hesabım var' : 'Yeni hesab yarat')));
+}
+
+onAuthStateChanged(auth, async u => {
+  if (!u) return authView();
+  const [a, s] = await Promise.all([getDoc(doc(db, 'admins', u.uid)), getDoc(doc(db, 'users', u.uid))]);
+  me = {uid: u.uid, admin: a.exists(), name: pendingName || s.data()?.name || u.email};
+  me.admin ? adminHome() : studentHome();
+});
+
+/* ---------- Tələbə ---------- */
+async function studentHome() {
+  show(top('Testlər'), h('p', 'Yüklənir...'));
+  const [t, a] = await Promise.all([
+    getDocs(query(collection(db, 'tests'), where('published', '==', true))),
+    getDocs(query(collection(db, 'attempts'), where('uid', '==', me.uid)))
+  ]);
+  const at = {}; a.forEach(d => at[d.data().testId] = d.data());
+  show(top('Testlər'), ...(t.empty ? [h('p', 'Hələ aktiv test yoxdur.')] : t.docs.map(d => {
+    const x = d.data(), r = at[d.id];
+    return h('div', {class: 'card'}, h('b', x.title), h('p', `${x.questions.length} sual, ${x.durationMin} dəqiqə`),
+      r && h('p', r.graded ? `Nəticə: ${r.total} bal` : r.submitted ? 'Göndərilib, müəllim yoxlayır' : 'Başlanıb'),
+      (!r || !r.submitted) && h('button', {onclick: () => takeTest(d.id, x)}, r ? 'Davam et' : 'Başla'));
+  })));
+}
+
+async function clockOffset() { // server saatı ilə telefon saatı arasındakı fərq
+  const r = doc(db, 'users', me.uid), t = Date.now();
+  await setDoc(r, {ping: serverTimestamp()}, {merge: true});
+  const p = (await getDoc(r)).data().ping.toMillis();
+  return p - (t + Date.now()) / 2;
+}
+
+async function takeTest(id, t) {
+  const ref = doc(db, 'attempts', me.uid + '_' + id);
+  let s = await getDoc(ref);
+  if (!s.exists()) {
+    await setDoc(ref, {uid: me.uid, name: me.name, testId: id, title: t.title, startedAt: serverTimestamp(), submitted: false});
+    s = await getDoc(ref);
+  }
+  const a = s.data();
+  if (a.submitted) return studentHome();
+  const off = await clockOffset();
+  const end = a.startedAt.toMillis() + t.durationMin * 60000 - off;
+  const ans = {}, left = h('span', {class: 'timer'});
+  let done = false, iv;
+  const qs = t.questions.map((q, i) => h('div', {class: 'card'},
+    h('b', `${i + 1}. ${q.text}`), h('small', ` (${q.points} bal)`),
+    q.type == 'mc'
+      ? q.options.map((o, j) => h('label', {class: 'opt'}, h('input', {type: 'radio', name: 'q' + i, onchange: () => ans[i] = j}), o))
+      : h('textarea', {rows: 5, placeholder: 'Cavabınız', oninput: e => ans[i] = e.target.value})));
+  const send = async () => {
+    if (done) return; done = true; clearInterval(iv);
+    try { await updateDoc(ref, {answers: ans, submitted: true, submittedAt: serverTimestamp()}); }
+    catch (e) { alert('Cavab göndərilmədi (vaxt bitmiş ola bilər): ' + (e.code || e.message)); }
+    studentHome();
+  };
+  iv = setInterval(() => {
+    const r = Math.max(0, Math.round((end - Date.now()) / 1000));
+    left.textContent = `${Math.floor(r / 60)}:${String(r % 60).padStart(2, '0')}`;
+    if (r <= 0) send();
+  }, 500);
+  show(h('div', {class: 'bar sticky'}, h('b', t.title), left), ...qs,
+    h('button', {onclick: () => confirm('Cavablar göndərilsin?') && send()}, 'Bitir və göndər'));
+}
+
+/* ---------- Müəllim ---------- */
+async function adminHome() {
+  const t = await getDocs(collection(db, 'tests'));
+  show(top('Müəllim paneli'), h('button', {onclick: editor}, 'Yeni test yarat'),
+    ...t.docs.map(d => {
+      const x = d.data();
+      return h('div', {class: 'card'}, h('b', x.title),
+        h('p', `${x.questions.length} sual, ${x.durationMin} dəqiqə, ${x.published ? 'tələbələrə açıq' : 'qaralama'}`),
+        h('button', {class: 'sm', onclick: async () => { await updateDoc(doc(db, 'tests', d.id), {published: !x.published}); adminHome(); }}, x.published ? 'Gizlət' : 'Yayımla'),
+        h('button', {class: 'sm', onclick: () => results(d.id, x)}, 'Nəticələr'));
+    }));
+}
+
+function editor() {
+  const title = h('input', {placeholder: 'Test adı'}), dur = h('input', {type: 'number', placeholder: 'Müddət (dəqiqə)', value: 30});
+  const box = h('div'), rows = [];
+  const add = type => {
+    const q = h('textarea', {rows: 2, placeholder: 'Sual mətni'}), pts = h('input', {type: 'number', value: 1, min: 0, style: 'width:80px'});
+    const opts = type == 'mc' ? [0, 1, 2, 3].map(i => h('input', {placeholder: 'Variant ' + 'ABCD'[i]})) : [];
+    const cor = type == 'mc' ? h('select', {}, ...[0, 1, 2, 3].map(i => h('option', {value: i}, 'Düz cavab: ' + 'ABCD'[i]))) : null;
+    rows.push({type, q, pts, opts, cor});
+    box.append(h('div', {class: 'card'}, h('b', type == 'mc' ? 'Test sualı' : 'Açıq sual'), q, ...opts, cor, h('label', {}, 'Bal: ', pts)));
+  };
+  const save = async () => {
+    const qs = rows.map(r => ({type: r.type, text: r.q.value.trim(), points: +r.pts.value || 0, ...(r.type == 'mc' ? {options: r.opts.map(o => o.value.trim())} : {})}));
+    if (!title.value.trim() || !qs.length || qs.some(q => !q.text || (q.options && q.options.some(o => !o)))) return alert('Test adını, bütün sualları və variantları doldurun');
+    const ref = await addDoc(collection(db, 'tests'), {title: title.value.trim(), durationMin: Math.round(+dur.value) || 30, questions: qs, published: false, createdAt: serverTimestamp()});
+    await setDoc(doc(db, 'answerKeys', ref.id), {correct: Object.fromEntries(rows.map((r, i) => r.type == 'mc' ? [i, +r.cor.value] : null).filter(Boolean))});
+    adminHome();
+  };
+  add('mc');
+  show(top('Yeni test'), h('div', {class: 'card'}, title, dur), box,
+    h('button', {class: 'sm', onclick: () => add('mc')}, '+ Test sualı'), h('button', {class: 'sm', onclick: () => add('open')}, '+ Açıq sual'),
+    h('div', {}, h('button', {onclick: save}, 'Saxla'), h('button', {class: 'sm', onclick: adminHome}, 'Ləğv et')));
+}
+
+async function results(id, t) {
+  const [k, a] = await Promise.all([getDoc(doc(db, 'answerKeys', id)), getDocs(query(collection(db, 'attempts'), where('testId', '==', id)))]);
+  const key = k.data()?.correct || {}, max = t.questions.reduce((s, q) => s + q.points, 0);
+  show(top(t.title), h('button', {class: 'sm', onclick: adminHome}, 'Geri'),
+    ...(a.empty ? [h('p', 'Hələ heç kim başlamayıb.')] : a.docs.map(d => {
+      const r = d.data(), ans = r.answers || {}, inputs = {};
+      let mc = 0; t.questions.forEach((q, i) => { if (q.type == 'mc' && ans[i] === key[i]) mc += q.points; });
+      const open = t.questions.map((q, i) => q.type == 'open' && h('div', {class: 'ans'}, h('small', `${i + 1}. ${q.text}`), h('p', ans[i] || '(boş)'),
+        h('label', {}, `Bal (maks ${q.points}): `, (inputs[i] = h('input', {type: 'number', min: 0, max: q.points, value: r.openPts?.[i] ?? 0, style: 'width:80px'})))));
+      const grade = async () => {
+        const op = {}; let s = 0;
+        for (const i in inputs) { op[i] = +inputs[i].value || 0; s += op[i]; }
+        await updateDoc(d.ref, {mcScore: mc, openPts: op, total: mc + s, graded: true});
+        alert(`Saxlandı: ${mc + s} / ${max}`);
+      };
+      return h('div', {class: 'card'}, h('b', r.name), h('p', `${r.submitted ? 'Göndərilib' : 'Göndərilməyib'}. Test sualları: ${mc} bal. Ümumi maksimum: ${max}`),
+        ...open, h('button', {class: 'sm', onclick: grade}, r.graded ? `Yenilə (${r.total} bal)` : 'Qiymətləndir'));
+    })));
+}
+</script>
+</body>
+</html>

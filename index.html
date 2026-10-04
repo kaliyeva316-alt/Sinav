@@ -61,11 +61,13 @@ const err = x => ({
   'auth/invalid-email': 'E-poçt düzgün deyil'
 }[x.code] || x.code || x.message);
 
+// Tarix və saat formatı
+const fmt = ts => ts && ts.toDate ? ts.toDate().toLocaleString('az-AZ', {day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit'}) : '—';
+
 let me = null, pendingName = '';
 const top = t => h('div', {class: 'bar'}, h('b', t), h('span', {}, me.name + ' ', h('button', {class: 'sm', onclick: () => signOut(auth)}, 'Çıxış')));
 
 /* ---------- Şəkil köməkçiləri ---------- */
-// Şəkli kiçildir və JPEG data-URL qaytarır (Firestore sənəd limiti 1 MB olduğu üçün)
 const shrink = file => new Promise((ok, no) => {
   const url = URL.createObjectURL(file), im = new Image();
   im.onload = () => {
@@ -82,7 +84,6 @@ const shrink = file => new Promise((ok, no) => {
   im.onerror = () => no(new Error('bad'));
   im.src = url;
 });
-// Sualın şəklini "images" kolleksiyasından yükləyir
 const imgEl = id => {
   const i = h('img', {class: 'qimg', alt: 'Sual şəkli'});
   getDoc(doc(db, 'images', id)).then(s => { if (s.exists()) i.src = s.data().data; }).catch(() => {});
@@ -120,16 +121,23 @@ onAuthStateChanged(auth, async u => {
 /* ---------- Tələbə ---------- */
 async function studentHome() {
   show(top('Testlər'), h('p', 'Yüklənir...'));
-  const [t, a] = await Promise.all([
+  const [t, a, off] = await Promise.all([
     getDocs(query(collection(db, 'tests'), where('published', '==', true))),
-    getDocs(query(collection(db, 'attempts'), where('uid', '==', me.uid)))
+    getDocs(query(collection(db, 'attempts'), where('uid', '==', me.uid))),
+    clockOffset()
   ]);
+  const now = Date.now() + off;
   const at = {}; a.forEach(d => at[d.data().testId] = d.data());
   show(top('Testlər'), ...(t.empty ? [h('p', 'Hələ aktiv test yoxdur.')] : t.docs.map(d => {
     const x = d.data(), r = at[d.id];
+    const o = x.openAt ? x.openAt.toMillis() : 0, c = x.closeAt ? x.closeAt.toMillis() : 0;
+    const notYet = !!o && o > now, closed = !!c && c < now, open = !r || !r.submitted;
     return h('div', {class: 'card'}, h('b', x.title), h('p', `${x.questions.length} sual, ${x.durationMin} dəqiqə`),
+      (o || c) && h('p', `Giriş: ${fmt(x.openAt)}  |  Çıxış: ${fmt(x.closeAt)}`),
       r && h('p', r.graded ? `Nəticə: ${r.total} bal` : r.submitted ? 'Göndərilib, müəllim yoxlayır' : 'Başlanıb'),
-      (!r || !r.submitted) && h('button', {onclick: () => takeTest(d.id, x)}, r ? 'Davam et' : 'Başla'));
+      open && notYet && h('p', {class: 'err'}, 'Test hələ başlamayıb'),
+      open && closed && h('p', {class: 'err'}, 'Testin vaxtı bitib'),
+      open && !notYet && !closed && h('button', {onclick: () => takeTest(d.id, x)}, r ? 'Davam et' : 'Başla'));
   })));
 }
 
@@ -143,14 +151,17 @@ async function clockOffset() { // server saatı ilə telefon saatı arasındakı
 async function takeTest(id, t) {
   const ref = doc(db, 'attempts', me.uid + '_' + id);
   let s = await getDoc(ref);
+  if (s.exists() && s.data().submitted) return studentHome();
+  const off = await clockOffset(), now = Date.now() + off;
+  if (t.openAt && t.openAt.toMillis() > now) { alert('Test hələ başlamayıb'); return studentHome(); }
+  if (t.closeAt && t.closeAt.toMillis() < now) { alert('Testin vaxtı bitib'); return studentHome(); }
   if (!s.exists()) {
     await setDoc(ref, {uid: me.uid, name: me.name, testId: id, title: t.title, startedAt: serverTimestamp(), submitted: false});
     s = await getDoc(ref);
   }
   const a = s.data();
-  if (a.submitted) return studentHome();
-  const off = await clockOffset();
-  const end = a.startedAt.toMillis() + t.durationMin * 60000 - off;
+  let end = a.startedAt.toMillis() + t.durationMin * 60000 - off;
+  if (t.closeAt) end = Math.min(end, t.closeAt.toMillis() - off); // çıxış vaxtında test bağlanır
   const ans = {}, left = h('span', {class: 'timer'});
   let done = false, iv;
   const qs = t.questions.map((q, i) => h('div', {class: 'card'},
@@ -182,6 +193,7 @@ async function adminHome() {
       const x = d.data();
       return h('div', {class: 'card'}, h('b', x.title),
         h('p', `${x.questions.length} sual, ${x.durationMin} dəqiqə, ${x.published ? 'tələbələrə açıq' : 'qaralama'}`),
+        (x.openAt || x.closeAt) && h('p', `Giriş: ${fmt(x.openAt)}  |  Çıxış: ${fmt(x.closeAt)}`),
         h('button', {class: 'sm', onclick: async () => { await updateDoc(doc(db, 'tests', d.id), {published: !x.published}); adminHome(); }}, x.published ? 'Gizlət' : 'Yayımla'),
         h('button', {class: 'sm', onclick: () => results(d.id, x)}, 'Nəticələr'));
     }));
@@ -189,6 +201,7 @@ async function adminHome() {
 
 function editor() {
   const title = h('input', {placeholder: 'Test adı'}), dur = h('input', {type: 'number', placeholder: 'Müddət (dəqiqə)', value: 30});
+  const openIn = h('input', {type: 'datetime-local'}), closeIn = h('input', {type: 'datetime-local'});
   const box = h('div'), rows = [];
   const add = type => {
     const q = h('textarea', {rows: 2, placeholder: 'Sual mətni (şəkil əlavə edirsinizsə, boş qala bilər)'}), pts = h('input', {type: 'number', value: 1, min: 0, style: 'width:80px'});
@@ -217,6 +230,8 @@ function editor() {
   const save = async () => {
     if (saving) return;
     if (!title.value.trim() || !rows.length || rows.some(r => (!r.q.value.trim() && !r.img) || r.opts.some(o => !o.value.trim()))) return alert('Test adını, hər sualın mətnini (və ya şəklini) və bütün variantları doldurun');
+    const op = openIn.value ? new Date(openIn.value) : null, cl = closeIn.value ? new Date(closeIn.value) : null;
+    if (op && cl && cl <= op) return alert('Çıxış vaxtı giriş vaxtından sonra olmalıdır');
     saving = true;
     try {
       const ids = await Promise.all(rows.map(r => r.img
@@ -227,7 +242,7 @@ function editor() {
         ...(ids[i] ? {img: ids[i]} : {}),
         ...(r.type == 'mc' ? {options: r.opts.map(o => o.value.trim())} : {})
       }));
-      const ref = await addDoc(collection(db, 'tests'), {title: title.value.trim(), durationMin: Math.round(+dur.value) || 30, questions: qs, published: false, createdAt: serverTimestamp()});
+      const ref = await addDoc(collection(db, 'tests'), {title: title.value.trim(), durationMin: Math.round(+dur.value) || 30, questions: qs, openAt: op, closeAt: cl, published: false, createdAt: serverTimestamp()});
       await setDoc(doc(db, 'answerKeys', ref.id), {correct: Object.fromEntries(rows.map((r, i) => r.type == 'mc' ? [i, +r.cor.value] : null).filter(Boolean))});
       adminHome();
     } catch (x) {
@@ -236,7 +251,10 @@ function editor() {
     }
   };
   add('mc');
-  show(top('Yeni test'), h('div', {class: 'card'}, title, dur), box,
+  show(top('Yeni test'), h('div', {class: 'card'}, title, dur,
+      h('div', {}, h('small', 'Giriş vaxtı (bu saatdan əvvəl açılmır, boş = məhdudiyyət yoxdur)')), openIn,
+      h('div', {}, h('small', 'Çıxış vaxtı (bu saatdan sonra bağlanır, boş = məhdudiyyət yoxdur)')), closeIn),
+    box,
     h('button', {class: 'sm', onclick: () => add('mc')}, '+ Test sualı'), h('button', {class: 'sm', onclick: () => add('open')}, '+ Açıq sual'),
     h('div', {}, h('button', {onclick: save}, 'Saxla'), h('button', {class: 'sm', onclick: adminHome}, 'Ləğv et')));
 }
@@ -256,7 +274,9 @@ async function results(id, t) {
         await updateDoc(d.ref, {mcScore: mc, openPts: op, total: mc + s, graded: true});
         alert(`Saxlandı: ${mc + s} / ${max}`);
       };
-      return h('div', {class: 'card'}, h('b', r.name), h('p', `${r.submitted ? 'Göndərilib' : 'Göndərilməyib'}. Test sualları: ${mc} bal. Ümumi maksimum: ${max}`),
+      return h('div', {class: 'card'}, h('b', r.name),
+        h('p', `Giriş: ${fmt(r.startedAt)}  |  Çıxış: ${fmt(r.submittedAt)}`),
+        h('p', `${r.submitted ? 'Göndərilib' : 'Göndərilməyib'}. Test sualları: ${mc} bal. Ümumi maksimum: ${max}`),
         ...open, h('button', {class: 'sm', onclick: grade}, r.graded ? `Yenilə (${r.total} bal)` : 'Qiymətləndir'));
     })));
 }

@@ -186,6 +186,7 @@ async function studentHome() {
     return h('div', {class: 'card'}, h('b', x.title), h('p', `${x.questions.length} sual, ${x.durationMin} dəqiqə`),
       (o || c) && h('p', `Giriş: ${fmt(x.openAt)}  |  Çıxış: ${fmt(x.closeAt)}`),
       r && h('p', r.graded ? `Nəticə: ${r.total} bal` : r.submitted ? 'Göndərilib, müəllim yoxlayır' : 'Başlanıb'),
+      r && r.graded && r.mcReview && h('button', {class: 'sm', onclick: () => review(x, r)}, 'Cavablara bax'),
       open && notYet && h('p', {class: 'err'}, 'Test hələ başlamayıb'),
       open && closed && h('p', {class: 'err'}, 'Testin vaxtı bitib'),
       open && !notYet && !closed && h('button', {onclick: () => takeTest(d.id, x)}, r ? 'Davam et' : 'Başla'));
@@ -202,6 +203,22 @@ async function myResults() {
   const rows = rowsOf(a.docs.map(d => d.data()), tests);
   show(top('Nəticələrim'), h('button', {class: 'sm', onclick: studentHome}, 'Geri'),
     h('div', {class: 'card'}, rows.length ? progress(rows) : h('p', 'Hələ qiymətləndirilmiş nəticə yoxdur.')));
+}
+
+function review(t, r) {
+  const rv = r.mcReview || {};
+  show(top(t.title), h('button', {class: 'sm', onclick: studentHome}, 'Geri'),
+    h('div', {class: 'card'}, h('b', `Nəticə: ${r.total} bal`),
+      ...t.questions.map((q, i) => {
+        if (q.type != 'mc' || !rv[i]) return null;
+        const {g, c} = rv[i], ok = g === c;
+        return h('div', {class: 'ans'},
+          h('p', {style: `color:${ok ? '#2e9e5b' : 'var(--e)'};margin:2px 0`},
+            `${i + 1}. ${ok ? '✓ Düz' : '✗ Səhv'}` +
+            (g === null ? ' (boş)' : `  |  Sənin cavabın: ${LET[g]}`) +
+            (ok ? '' : `  |  Düz cavab: ${LET[c]}`)),
+          q.text && h('small', q.text));
+      })));
 }
 
 async function clockOffset() { // server saatı ilə telefon saatı arasındakı fərq
@@ -342,13 +359,29 @@ async function results(id, t) {
     ...(common.length ? [h('div', {class: 'card'}, h('small', 'Ümumi şəkillər'), common.map(imgEl))] : []),
     ...(a.empty ? [h('p', 'Hələ heç kim başlamayıb.')] : a.docs.map(d => {
       const r = d.data(), ans = r.answers || {}, inputs = {};
-      let mc = 0; t.questions.forEach((q, i) => { if (q.type == 'mc' && ans[i] === key[i]) mc += q.points; });
+      let mc = 0, right = 0, wrong = 0, blank = 0;
+      t.questions.forEach((q, i) => {
+        if (q.type != 'mc') return;
+        if (ans[i] === undefined) blank++;
+        else if (ans[i] === key[i]) { mc += q.points; right++; }
+        else wrong++;
+      });
+      const rev = t.questions.map((q, i) => {
+        if (q.type != 'mc') return null;
+        const got = ans[i], ok = got !== undefined && got === key[i];
+        return h('p', {style: `color:${ok ? '#2e9e5b' : 'var(--e)'};margin:2px 0`},
+          `${i + 1}. ${ok ? '✓ Düz' : '✗ Səhv'}` +
+          (got === undefined ? ' (boş)' : `  |  Şagird: ${LET[got]}`) +
+          (ok ? '' : `  |  Düz cavab: ${LET[key[i]]}`));
+      });
       const open = t.questions.map((q, i) => q.type == 'open' && h('div', {class: 'ans'}, h('small', `${i + 1}. ${q.text}`), q.img && imgEl(q.img), h('p', ans[i] || '(boş)'),
         h('label', {}, `Bal (maks ${q.points}): `, (inputs[i] = h('input', {type: 'number', min: 0, max: q.points, value: r.openPts?.[i] ?? 0, style: 'width:80px'})))));
       const grade = async () => {
         const op = {}; let s = 0;
         for (const i in inputs) { op[i] = +inputs[i].value || 0; s += op[i]; }
-        await updateDoc(d.ref, {mcScore: mc, openPts: op, total: mc + s, graded: true});
+        const rv = {};
+        t.questions.forEach((q, i) => { if (q.type == 'mc') rv[i] = {g: ans[i] ?? null, c: key[i]}; });
+        await updateDoc(d.ref, {mcScore: mc, openPts: op, total: mc + s, graded: true, mcReview: rv});
         alert(`Saxlandı: ${mc + s} / ${max}`);
       };
       return h('div', {class: 'card'}, h('b', r.name),
@@ -359,6 +392,8 @@ async function results(id, t) {
           return `Sərf olunan vaxt: ${Math.floor(s / 60)} dəq ${s % 60} san`;
         })()),
         h('p', `${r.submitted ? 'Göndərilib' : 'Göndərilməyib'}. Test sualları: ${mc} bal. Ümumi maksimum: ${max}`),
+        h('p', `Düz: ${right}  |  Səhv: ${wrong}  |  Boş: ${blank}`),
+        h('div', {class: 'ans'}, ...rev),
         ...open, h('button', {class: 'sm', onclick: grade}, r.graded ? `Yenilə (${r.total} bal)` : 'Qiymətləndir'));
     })));
 }

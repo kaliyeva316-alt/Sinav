@@ -153,6 +153,22 @@ onAuthStateChanged(auth, async u => {
   me.admin ? adminHome() : studentHome();
 });
 
+/* ---------- Nəticə faizləri (ortaq) ---------- */
+const pctOf = (r, t) => {
+  const max = t.questions.reduce((s, q) => s + q.points, 0);
+  return max ? Math.round(r.total / max * 100) : 0;
+};
+const rowsOf = (atts, tests) => atts
+  .filter(r => r.graded && tests[r.testId])
+  .map(r => ({title: r.title, pct: pctOf(r, tests[r.testId]), at: r.startedAt ? r.startedAt.toMillis() : 0}))
+  .sort((a, b) => a.at - b.at);
+const progress = rows => rows.map((x, i) => {
+  const d = i ? x.pct - rows[i - 1].pct : null;
+  return h('div', {class: 'opt'}, h('b', x.title), ` ${x.pct}% `,
+    d !== null && h('span', {style: `color:${d >= 0 ? '#2e9e5b' : 'var(--e)'}`},
+      d > 0 ? `▲ ${d}%` : d < 0 ? `▼ ${-d}%` : '= 0%'));
+});
+
 /* ---------- Tələbə ---------- */
 async function studentHome() {
   show(top('Testlər'), h('p', 'Yüklənir...'));
@@ -163,7 +179,7 @@ async function studentHome() {
   ]);
   const now = Date.now() + off;
   const at = {}; a.forEach(d => at[d.data().testId] = d.data());
-  show(top('Testlər'), ...(t.empty ? [h('p', 'Hələ aktiv test yoxdur.')] : t.docs.map(d => {
+  show(top('Testlər'), h('button', {class: 'sm', onclick: myResults}, 'Nəticələrim'), ...(t.empty ? [h('p', 'Hələ aktiv test yoxdur.')] : t.docs.map(d => {
     const x = d.data(), r = at[d.id];
     const o = x.openAt ? x.openAt.toMillis() : 0, c = x.closeAt ? x.closeAt.toMillis() : 0;
     const notYet = !!o && o > now, closed = !!c && c < now, open = !r || !r.submitted;
@@ -174,6 +190,18 @@ async function studentHome() {
       open && closed && h('p', {class: 'err'}, 'Testin vaxtı bitib'),
       open && !notYet && !closed && h('button', {onclick: () => takeTest(d.id, x)}, r ? 'Davam et' : 'Başla'));
   })));
+}
+
+async function myResults() {
+  show(top('Nəticələrim'), h('p', 'Yüklənir...'));
+  const [t, a] = await Promise.all([
+    getDocs(query(collection(db, 'tests'), where('published', '==', true))),
+    getDocs(query(collection(db, 'attempts'), where('uid', '==', me.uid)))
+  ]);
+  const tests = {}; t.forEach(d => tests[d.id] = d.data());
+  const rows = rowsOf(a.docs.map(d => d.data()), tests);
+  show(top('Nəticələrim'), h('button', {class: 'sm', onclick: studentHome}, 'Geri'),
+    h('div', {class: 'card'}, rows.length ? progress(rows) : h('p', 'Hələ qiymətləndirilmiş nəticə yoxdur.')));
 }
 
 async function clockOffset() { // server saatı ilə telefon saatı arasındakı fərq
@@ -227,6 +255,7 @@ async function takeTest(id, t) {
 async function adminHome() {
   const t = await getDocs(collection(db, 'tests'));
   show(top('Müəllim paneli'), h('button', {onclick: editor}, 'Yeni test yarat'),
+    h('button', {class: 'sm', onclick: allResults}, 'Şagird nəticələri'),
     ...t.docs.map(d => {
       const x = d.data();
       return h('div', {class: 'card'}, h('b', x.title),
@@ -234,6 +263,20 @@ async function adminHome() {
         (x.openAt || x.closeAt) && h('p', `Giriş: ${fmt(x.openAt)}  |  Çıxış: ${fmt(x.closeAt)}`),
         h('button', {class: 'sm', onclick: async () => { await updateDoc(doc(db, 'tests', d.id), {published: !x.published}); adminHome(); }}, x.published ? 'Gizlət' : 'Yayımla'),
         h('button', {class: 'sm', onclick: () => results(d.id, x)}, 'Nəticələr'));
+    }));
+}
+
+async function allResults() {
+  show(top('Şagird nəticələri'), h('p', 'Yüklənir...'));
+  const [t, a] = await Promise.all([getDocs(collection(db, 'tests')), getDocs(collection(db, 'attempts'))]);
+  const tests = {}; t.forEach(d => tests[d.id] = d.data());
+  const by = {};
+  a.forEach(d => { const r = d.data(); (by[r.uid] ||= {name: r.name, list: []}).list.push(r); });
+  show(top('Şagird nəticələri'), h('button', {class: 'sm', onclick: adminHome}, 'Geri'),
+    ...Object.values(by).map(s => {
+      const rows = rowsOf(s.list, tests);
+      return h('div', {class: 'card'}, h('b', s.name),
+        rows.length ? progress(rows) : h('p', 'Qiymətləndirilmiş nəticə yoxdur'));
     }));
 }
 
@@ -310,6 +353,11 @@ async function results(id, t) {
       };
       return h('div', {class: 'card'}, h('b', r.name),
         h('p', `Giriş: ${fmt(r.startedAt)}  |  Çıxış: ${fmt(r.submittedAt)}`),
+        h('p', (() => {
+          if (!r.startedAt || !r.submittedAt) return 'Sərf olunan vaxt: —';
+          const s = Math.round((r.submittedAt.toMillis() - r.startedAt.toMillis()) / 1000);
+          return `Sərf olunan vaxt: ${Math.floor(s / 60)} dəq ${s % 60} san`;
+        })()),
         h('p', `${r.submitted ? 'Göndərilib' : 'Göndərilməyib'}. Test sualları: ${mc} bal. Ümumi maksimum: ${max}`),
         ...open, h('button', {class: 'sm', onclick: grade}, r.graded ? `Yenilə (${r.total} bal)` : 'Qiymətləndir'));
     })));

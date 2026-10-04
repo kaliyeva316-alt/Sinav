@@ -248,7 +248,7 @@ function editor() {
     const cor = type == 'mc' ? h('select', {}, ...[...Array(NOPT).keys()].map(i => h('option', {value: i}, 'Düz cavab: ' + LET[i]))) : null;
     const r = {type, q, pts, opts, cor, img: null};
     rows.push(r);
-    box.append(h('div', {class: 'card'}, h('b', type == 'mc' ? 'Test sualı' : 'Açıq sual'), q,
+    box.append(h('div', {class: 'card'}, h('b', `Sual ${rows.length}. (${type == 'mc' ? 'test' : 'açıq'})`), q,
       ...imgPicker('📷 Şəkil əlavə et', r),
       ...opts, cor, h('label', {}, 'Bal: ', pts)));
   };

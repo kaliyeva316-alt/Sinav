@@ -22,6 +22,7 @@ button.sm{background:none;color:var(--a);border:1px solid var(--a);padding:6px 1
 .err{color:var(--e)}
 .timer{font-size:1.5rem;font-weight:700;font-variant-numeric:tabular-nums}
 .ans{border-top:1px solid var(--b);padding-top:8px;margin-top:8px}
+.qimg{display:block;max-width:100%;height:auto;border-radius:8px;margin:8px 0;border:1px solid var(--b);background:#fff}
 small,p{color:var(--m)}
 p{margin:6px 0;white-space:pre-wrap}
 h2{margin:4px 0 10px}
@@ -62,6 +63,31 @@ const err = x => ({
 
 let me = null, pendingName = '';
 const top = t => h('div', {class: 'bar'}, h('b', t), h('span', {}, me.name + ' ', h('button', {class: 'sm', onclick: () => signOut(auth)}, 'Çıxış')));
+
+/* ---------- Şəkil köməkçiləri ---------- */
+// Şəkli kiçildir və JPEG data-URL qaytarır (Firestore sənəd limiti 1 MB olduğu üçün)
+const shrink = file => new Promise((ok, no) => {
+  const url = URL.createObjectURL(file), im = new Image();
+  im.onload = () => {
+    URL.revokeObjectURL(url);
+    let w = im.width, ht = im.height;
+    const M = 1200;
+    if (Math.max(w, ht) > M) { const k = M / Math.max(w, ht); w = Math.round(w * k); ht = Math.round(ht * k); }
+    const c = document.createElement('canvas'); c.width = w; c.height = ht;
+    const x = c.getContext('2d'); x.fillStyle = '#fff'; x.fillRect(0, 0, w, ht); x.drawImage(im, 0, 0, w, ht);
+    let q = 0.8, d = c.toDataURL('image/jpeg', q);
+    while (d.length > 700000 && q > 0.3) { q -= 0.1; d = c.toDataURL('image/jpeg', q); }
+    d.length > 900000 ? no(new Error('big')) : ok(d);
+  };
+  im.onerror = () => no(new Error('bad'));
+  im.src = url;
+});
+// Sualın şəklini "images" kolleksiyasından yükləyir
+const imgEl = id => {
+  const i = h('img', {class: 'qimg', alt: 'Sual şəkli'});
+  getDoc(doc(db, 'images', id)).then(s => { if (s.exists()) i.src = s.data().data; }).catch(() => {});
+  return i;
+};
 
 /* ---------- Giriş / qeydiyyat ---------- */
 function authView(reg = false) {
@@ -128,7 +154,8 @@ async function takeTest(id, t) {
   const ans = {}, left = h('span', {class: 'timer'});
   let done = false, iv;
   const qs = t.questions.map((q, i) => h('div', {class: 'card'},
-    h('b', `${i + 1}. ${q.text}`), h('small', ` (${q.points} bal)`),
+    h('b', q.text ? `${i + 1}. ${q.text}` : `${i + 1}.`), h('small', ` (${q.points} bal)`),
+    q.img && imgEl(q.img),
     q.type == 'mc'
       ? q.options.map((o, j) => h('label', {class: 'opt'}, h('input', {type: 'radio', name: 'q' + i, onchange: () => ans[i] = j}), o))
       : h('textarea', {rows: 5, placeholder: 'Cavabınız', oninput: e => ans[i] = e.target.value})));
@@ -164,18 +191,49 @@ function editor() {
   const title = h('input', {placeholder: 'Test adı'}), dur = h('input', {type: 'number', placeholder: 'Müddət (dəqiqə)', value: 30});
   const box = h('div'), rows = [];
   const add = type => {
-    const q = h('textarea', {rows: 2, placeholder: 'Sual mətni'}), pts = h('input', {type: 'number', value: 1, min: 0, style: 'width:80px'});
+    const q = h('textarea', {rows: 2, placeholder: 'Sual mətni (şəkil əlavə edirsinizsə, boş qala bilər)'}), pts = h('input', {type: 'number', value: 1, min: 0, style: 'width:80px'});
     const opts = type == 'mc' ? [0, 1, 2, 3].map(i => h('input', {placeholder: 'Variant ' + 'ABCD'[i]})) : [];
     const cor = type == 'mc' ? h('select', {}, ...[0, 1, 2, 3].map(i => h('option', {value: i}, 'Düz cavab: ' + 'ABCD'[i]))) : null;
-    rows.push({type, q, pts, opts, cor});
-    box.append(h('div', {class: 'card'}, h('b', type == 'mc' ? 'Test sualı' : 'Açıq sual'), q, ...opts, cor, h('label', {}, 'Bal: ', pts)));
+    const r = {type, q, pts, opts, cor, img: null};
+    const prev = h('div');
+    const file = h('input', {type: 'file', accept: 'image/*', style: 'display:none', onchange: async e => {
+      const f = e.target.files[0]; if (!f) return;
+      prev.replaceChildren(h('small', 'Şəkil hazırlanır...'));
+      try {
+        r.img = await shrink(f);
+        prev.replaceChildren(h('img', {class: 'qimg', src: r.img}),
+          h('button', {class: 'sm', onclick: () => { r.img = null; prev.replaceChildren(); file.value = ''; }}, 'Şəkli sil'));
+      } catch (x) {
+        r.img = null;
+        prev.replaceChildren(h('small', {class: 'err'}, 'Şəkil yüklənmədi, başqa şəkil seçin'));
+      }
+    }});
+    rows.push(r);
+    box.append(h('div', {class: 'card'}, h('b', type == 'mc' ? 'Test sualı' : 'Açıq sual'), q,
+      file, h('button', {class: 'sm', onclick: () => file.click()}, '📷 Şəkil əlavə et'), prev,
+      ...opts, cor, h('label', {}, 'Bal: ', pts)));
   };
+  let saving = false;
   const save = async () => {
-    const qs = rows.map(r => ({type: r.type, text: r.q.value.trim(), points: +r.pts.value || 0, ...(r.type == 'mc' ? {options: r.opts.map(o => o.value.trim())} : {})}));
-    if (!title.value.trim() || !qs.length || qs.some(q => !q.text || (q.options && q.options.some(o => !o)))) return alert('Test adını, bütün sualları və variantları doldurun');
-    const ref = await addDoc(collection(db, 'tests'), {title: title.value.trim(), durationMin: Math.round(+dur.value) || 30, questions: qs, published: false, createdAt: serverTimestamp()});
-    await setDoc(doc(db, 'answerKeys', ref.id), {correct: Object.fromEntries(rows.map((r, i) => r.type == 'mc' ? [i, +r.cor.value] : null).filter(Boolean))});
-    adminHome();
+    if (saving) return;
+    if (!title.value.trim() || !rows.length || rows.some(r => (!r.q.value.trim() && !r.img) || r.opts.some(o => !o.value.trim()))) return alert('Test adını, hər sualın mətnini (və ya şəklini) və bütün variantları doldurun');
+    saving = true;
+    try {
+      const ids = await Promise.all(rows.map(r => r.img
+        ? addDoc(collection(db, 'images'), {data: r.img, createdAt: serverTimestamp()}).then(d => d.id)
+        : null));
+      const qs = rows.map((r, i) => ({
+        type: r.type, text: r.q.value.trim(), points: +r.pts.value || 0,
+        ...(ids[i] ? {img: ids[i]} : {}),
+        ...(r.type == 'mc' ? {options: r.opts.map(o => o.value.trim())} : {})
+      }));
+      const ref = await addDoc(collection(db, 'tests'), {title: title.value.trim(), durationMin: Math.round(+dur.value) || 30, questions: qs, published: false, createdAt: serverTimestamp()});
+      await setDoc(doc(db, 'answerKeys', ref.id), {correct: Object.fromEntries(rows.map((r, i) => r.type == 'mc' ? [i, +r.cor.value] : null).filter(Boolean))});
+      adminHome();
+    } catch (x) {
+      saving = false;
+      alert('Saxlanmadı: ' + (x.code || x.message));
+    }
   };
   add('mc');
   show(top('Yeni test'), h('div', {class: 'card'}, title, dur), box,
@@ -190,7 +248,7 @@ async function results(id, t) {
     ...(a.empty ? [h('p', 'Hələ heç kim başlamayıb.')] : a.docs.map(d => {
       const r = d.data(), ans = r.answers || {}, inputs = {};
       let mc = 0; t.questions.forEach((q, i) => { if (q.type == 'mc' && ans[i] === key[i]) mc += q.points; });
-      const open = t.questions.map((q, i) => q.type == 'open' && h('div', {class: 'ans'}, h('small', `${i + 1}. ${q.text}`), h('p', ans[i] || '(boş)'),
+      const open = t.questions.map((q, i) => q.type == 'open' && h('div', {class: 'ans'}, h('small', `${i + 1}. ${q.text}`), q.img && imgEl(q.img), h('p', ans[i] || '(boş)'),
         h('label', {}, `Bal (maks ${q.points}): `, (inputs[i] = h('input', {type: 'number', min: 0, max: q.points, value: r.openPts?.[i] ?? 0, style: 'width:80px'})))));
       const grade = async () => {
         const op = {}; let s = 0;

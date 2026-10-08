@@ -215,19 +215,26 @@ async function myResults() {
 }
 
 function review(t, r) {
-  const rv = r.mcReview || {};
+  const rv = r.mcReview || {}, ans = r.answers || {}, common = commonOf(t);
   show(top(t.title), h('button', {class: 'sm', onclick: studentHome}, 'Geri'),
-    h('div', {class: 'card'}, h('b', `Nəticə: ${r.total} bal`),
-      ...t.questions.map((q, i) => {
-        if (q.type != 'mc' || !rv[i]) return null;
-        const {g, c} = rv[i], ok = g === c;
-        return h('div', {class: 'ans'},
-          h('p', {style: `color:${ok ? '#2e9e5b' : 'var(--e)'};margin:2px 0`},
-            `${i + 1}. ${ok ? '✓ Düz' : '✗ Səhv'}` +
-            (g === null ? ' (boş)' : `  |  Sənin cavabın: ${LET[g]}`) +
-            (ok ? '' : `  |  Düz cavab: ${LET[c]}`)),
-          q.text && h('small', q.text));
-      })));
+    h('div', {class: 'card'}, h('b', `Nəticə: ${r.total} bal`)),
+    ...(common.length ? [h('div', {class: 'card'}, h('small', 'Ümumi şəkillər'), common.map(imgEl))] : []),
+    ...t.questions.map((q, i) => {
+      const head = [h('b', q.text ? `${i + 1}. ${q.text}` : `${i + 1}.`), h('small', ` (${q.points} bal)`), q.img && imgEl(q.img)];
+      if (q.type == 'mc') {
+        const x = rv[i], g = x ? x.g : (ans[i] ?? null), c = x ? x.c : null, ok = g !== null && g === c;
+        return h('div', {class: 'card'}, ...head,
+          h('p', {style: `color:${ok ? '#2e9e5b' : 'var(--e)'};font-weight:600`}, ok ? '✓ Düz' : g === null ? '✗ Boş' : '✗ Səhv'),
+          q.options.map((o, j) => {
+            const mine = j === g, right = j === c;
+            const col = right ? '#2e9e5b' : mine ? 'var(--e)' : 'var(--t)';
+            return h('div', {class: 'opt', style: `color:${col};font-weight:${mine || right ? 700 : 400}`},
+              `${LET[j]}) ${o}` + (mine ? '  ← sənin cavabın' : '') + (right ? '  ✓ düz cavab' : ''));
+          }));
+      }
+      return h('div', {class: 'card'}, ...head, h('p', ans[i] || '(boş)'),
+        h('small', `Müəllimin verdiyi bal: ${r.openPts?.[i] ?? 0} / ${q.points}`));
+    }));
 }
 
 async function clockOffset() { // server saatı ilə telefon saatı arasındakı fərq

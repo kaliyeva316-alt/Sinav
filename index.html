@@ -63,6 +63,11 @@ const err = x => ({
 
 const LET = 'ABCDE', NOPT = 5; // variant sayı
 const fmt = ts => ts && ts.toDate ? ts.toDate().toLocaleString('az-AZ', {day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit'}) : '—';
+const locIn = ts => { // Firestore vaxtını datetime-local formatına çevirir
+  if (!ts || !ts.toDate) return '';
+  const d = ts.toDate(), p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+};
 const commonOf = t => t.commonImgs || (t.commonImg ? [t.commonImg] : []); // köhnə testlərlə uyğunluq
 
 let me = null, pendingName = '';
@@ -90,29 +95,39 @@ const imgEl = id => {
   getDoc(doc(db, 'images', id)).then(s => { if (s.exists()) i.src = s.data().data; }).catch(() => {});
   return i;
 };
-// Tək şəkil seçici (hər sual üçün): r.img sahəsinə yazır
+// Tək şəkil seçici (hər sual üçün): r.img (yeni) və r.imgId (köhnə) sahələri ilə işləyir
 const imgPicker = (label, r) => {
   const prev = h('div');
+  const draw = () => {
+    prev.replaceChildren();
+    if (r.img) prev.append(h('img', {class: 'qimg', src: r.img}));
+    else if (r.imgId) prev.append(imgEl(r.imgId));
+    if (r.img || r.imgId) prev.append(h('button', {class: 'sm', onclick: () => { r.img = null; r.imgId = null; file.value = ''; draw(); }}, 'Şəkli sil'));
+  };
   const file = h('input', {type: 'file', accept: 'image/*', style: 'display:none', onchange: async e => {
     const f = e.target.files[0]; if (!f) return;
     prev.replaceChildren(h('small', 'Şəkil hazırlanır...'));
     try {
       r.img = await shrink(f);
-      prev.replaceChildren(h('img', {class: 'qimg', src: r.img}),
-        h('button', {class: 'sm', onclick: () => { r.img = null; prev.replaceChildren(); file.value = ''; }}, 'Şəkli sil'));
+      draw();
     } catch (x) {
       r.img = null;
-      prev.replaceChildren(h('small', {class: 'err'}, 'Şəkil yüklənmədi, başqa şəkil seçin'));
+      draw();
+      prev.append(h('small', {class: 'err'}, 'Şəkil yüklənmədi, başqa şəkil seçin'));
     }
   }});
+  draw();
   return [file, h('button', {class: 'sm', onclick: () => file.click()}, label), prev];
 };
-// Çoxlu şəkil seçici (ümumi şəkillər üçün): list massivinə yazır
-const multiPicker = (label, list) => {
+// Çoxlu şəkil seçici (ümumi şəkillər üçün): list = yeni şəkillər, keep = əvvəldən olan şəkil id-ləri
+const multiPicker = (label, list, keep = []) => {
   const prev = h('div');
-  const draw = () => prev.replaceChildren(...list.map((d, i) => h('div', {},
-    h('img', {class: 'qimg', src: d}),
-    h('button', {class: 'sm', onclick: () => { list.splice(i, 1); draw(); }}, 'Şəkli sil'))));
+  const draw = () => prev.replaceChildren(
+    ...keep.map((id, i) => h('div', {}, imgEl(id),
+      h('button', {class: 'sm', onclick: () => { keep.splice(i, 1); draw(); }}, 'Şəkli sil'))),
+    ...list.map((d, i) => h('div', {},
+      h('img', {class: 'qimg', src: d}),
+      h('button', {class: 'sm', onclick: () => { list.splice(i, 1); draw(); }}, 'Şəkli sil'))));
   const file = h('input', {type: 'file', accept: 'image/*', multiple: '', style: 'display:none', onchange: async e => {
     const fs = [...e.target.files]; if (!fs.length) return;
     prev.append(h('small', 'Şəkillər hazırlanır...'));
@@ -122,6 +137,7 @@ const multiPicker = (label, list) => {
     }
     file.value = ''; draw();
   }});
+  draw();
   return [file, h('button', {class: 'sm', onclick: () => file.click()}, label), prev];
 };
 
@@ -287,7 +303,7 @@ async function takeTest(id, t) {
 /* ---------- Müəllim ---------- */
 async function adminHome() {
   const t = await getDocs(collection(db, 'tests'));
-  show(top('Müəllim paneli'), h('button', {onclick: editor}, 'Yeni test yarat'),
+  show(top('Müəllim paneli'), h('button', {onclick: () => editor()}, 'Yeni test yarat'),
     h('button', {class: 'sm', onclick: allResults}, 'Şagird nəticələri'),
     ...t.docs.map(d => {
       const x = d.data();
@@ -295,6 +311,7 @@ async function adminHome() {
         h('p', `${x.questions.length} sual, ${x.durationMin} dəqiqə, ${x.published ? 'tələbələrə açıq' : 'qaralama'}`),
         (x.openAt || x.closeAt) && h('p', `Giriş: ${fmt(x.openAt)}  |  Çıxış: ${fmt(x.closeAt)}`),
         h('button', {class: 'sm', onclick: async () => { await updateDoc(doc(db, 'tests', d.id), {published: !x.published}); adminHome(); }}, x.published ? 'Gizlət' : 'Yayımla'),
+        h('button', {class: 'sm', onclick: () => editor(d.id, x)}, 'Redaktə et'),
         h('button', {class: 'sm', onclick: () => results(d.id, x)}, 'Nəticələr'));
     }));
 }
@@ -313,55 +330,94 @@ async function allResults() {
     }));
 }
 
-function editor() {
+// testId verilməsə yeni test yaradılır, verilsə mövcud test redaktə olunur
+async function editor(testId, t) {
+  let key = {}, taken = 0;
+  if (testId) {
+    show(top('Test redaktəsi'), h('p', 'Yüklənir...'));
+    const [k, a] = await Promise.all([
+      getDoc(doc(db, 'answerKeys', testId)),
+      getDocs(query(collection(db, 'attempts'), where('testId', '==', testId)))
+    ]);
+    key = k.data()?.correct || {}; taken = a.size;
+  }
   const title = h('input', {placeholder: 'Test adı'}), dur = h('input', {type: 'number', placeholder: 'Müddət (dəqiqə)', value: 30});
   const openIn = h('input', {type: 'datetime-local'}), closeIn = h('input', {type: 'datetime-local'});
+  if (t) { title.value = t.title; dur.value = t.durationMin; openIn.value = locIn(t.openAt); closeIn.value = locIn(t.closeAt); }
   const box = h('div'), rows = [];
-  const commonList = []; // ümumi şəkillər (çoxlu)
-  const add = type => {
-    const q = h('textarea', {rows: 2, placeholder: 'Sual mətni (şəkil əlavə edirsinizsə, boş qala bilər)'}), pts = h('input', {type: 'number', value: 1, min: 0, style: 'width:80px'});
-    const opts = type == 'mc' ? [...Array(NOPT).keys()].map(i => h('input', {placeholder: 'Variant ' + LET[i]})) : [];
+  const commonList = [];                       // yeni əlavə olunan ümumi şəkillər
+  const keep = t ? [...commonOf(t)] : [];      // əvvəldən olan ümumi şəkillər
+  const renum = () => rows.forEach((r, i) => r.lbl.textContent = `Sual ${i + 1}. (${r.type == 'mc' ? 'test' : 'açıq'})`);
+  const add = (type, pre, correct) => {
+    const q = h('textarea', {rows: 2, placeholder: 'Sual mətni (şəkil əlavə edirsinizsə, boş qala bilər)'});
+    if (pre) q.value = pre.text || '';
+    const pts = h('input', {type: 'number', value: pre ? pre.points : 1, min: 0, style: 'width:80px'});
+    const opts = type == 'mc' ? [...Array(NOPT).keys()].map(i => {
+      const o = h('input', {placeholder: 'Variant ' + LET[i]});
+      if (pre && pre.options) o.value = pre.options[i] || '';
+      return o;
+    }) : [];
     const cor = type == 'mc' ? h('select', {}, ...[...Array(NOPT).keys()].map(i => h('option', {value: i}, 'Düz cavab: ' + LET[i]))) : null;
-    const r = {type, q, pts, opts, cor, img: null};
+    if (cor && correct !== undefined) cor.value = correct;
+    const lbl = h('b');
+    const r = {type, q, pts, opts, cor, img: null, imgId: pre && pre.img ? pre.img : null, lbl};
     rows.push(r);
-    box.append(h('div', {class: 'card'}, h('b', `Sual ${rows.length}. (${type == 'mc' ? 'test' : 'açıq'})`), q,
+    const card = h('div', {class: 'card'}, lbl, q,
       ...imgPicker('📷 Şəkil əlavə et', r),
-      ...opts, cor, h('label', {}, 'Bal: ', pts)));
+      ...opts, cor, h('label', {}, 'Bal: ', pts),
+      h('div', {}, h('button', {class: 'sm', onclick: () => {
+        if (rows.length < 2) return alert('Ən azı bir sual qalmalıdır');
+        if (!confirm('Bu sual silinsin?')) return;
+        rows.splice(rows.indexOf(r), 1); card.remove(); renum();
+      }}, 'Sualı sil')));
+    box.append(card); renum();
   };
   let saving = false;
   const save = async () => {
     if (saving) return;
-    if (!title.value.trim() || !rows.length || rows.some(r => (!r.q.value.trim() && !r.img) || r.opts.some(o => !o.value.trim()))) return alert('Test adını, hər sualın mətnini (və ya şəklini) və bütün variantları doldurun');
+    if (!title.value.trim() || !rows.length || rows.some(r => (!r.q.value.trim() && !r.img && !r.imgId) || r.opts.some(o => !o.value.trim()))) return alert('Test adını, hər sualın mətnini (və ya şəklini) və bütün variantları doldurun');
     const op = openIn.value ? new Date(openIn.value) : null, cl = closeIn.value ? new Date(closeIn.value) : null;
     if (op && cl && cl <= op) return alert('Çıxış vaxtı giriş vaxtından sonra olmalıdır');
+    if (taken && !confirm(`Bu testə ${taken} şagird artıq başlayıb. Dəyişiklikləri saxlayırsan?`)) return;
     saving = true;
     try {
       const up = img => img ? addDoc(collection(db, 'images'), {data: img, createdAt: serverTimestamp()}).then(d => d.id) : null;
-      const [commonIds, ids] = await Promise.all([Promise.all(commonList.map(up)), Promise.all(rows.map(r => up(r.img)))]);
-      const qs = rows.map((r, i) => ({
-        type: r.type, text: r.q.value.trim(), points: +r.pts.value || 0,
-        ...(ids[i] ? {img: ids[i]} : {}),
-        ...(r.type == 'mc' ? {options: r.opts.map(o => o.value.trim())} : {})
-      }));
-      const ref = await addDoc(collection(db, 'tests'), {
-        title: title.value.trim(), durationMin: Math.round(+dur.value) || 30, questions: qs,
-        openAt: op, closeAt: cl, ...(commonIds.length ? {commonImgs: commonIds} : {}),
-        published: false, createdAt: serverTimestamp()
+      const [newCommon, ids] = await Promise.all([Promise.all(commonList.map(up)), Promise.all(rows.map(r => up(r.img)))]);
+      const qs = rows.map((r, i) => {
+        const im = ids[i] || r.imgId;
+        return {
+          type: r.type, text: r.q.value.trim(), points: +r.pts.value || 0,
+          ...(im ? {img: im} : {}),
+          ...(r.type == 'mc' ? {options: r.opts.map(o => o.value.trim())} : {})
+        };
       });
-      await setDoc(doc(db, 'answerKeys', ref.id), {correct: Object.fromEntries(rows.map((r, i) => r.type == 'mc' ? [i, +r.cor.value] : null).filter(Boolean))});
+      const data = {
+        title: title.value.trim(), durationMin: Math.round(+dur.value) || 30, questions: qs,
+        openAt: op, closeAt: cl, commonImgs: [...keep, ...newCommon]
+      };
+      const correct = Object.fromEntries(rows.map((r, i) => r.type == 'mc' ? [i, +r.cor.value] : null).filter(Boolean));
+      if (testId) {
+        await updateDoc(doc(db, 'tests', testId), data);
+        await setDoc(doc(db, 'answerKeys', testId), {correct});
+      } else {
+        const ref = await addDoc(collection(db, 'tests'), {...data, published: false, createdAt: serverTimestamp()});
+        await setDoc(doc(db, 'answerKeys', ref.id), {correct});
+      }
       adminHome();
     } catch (x) {
       saving = false;
       alert('Saxlanmadı: ' + (x.code || x.message));
     }
   };
-  add('mc');
-  show(top('Yeni test'), h('div', {class: 'card'}, title, dur,
+  if (t) t.questions.forEach((q, i) => add(q.type, q, key[i])); else add('mc');
+  show(top(testId ? 'Testi redaktə et' : 'Yeni test'),
+    ...(taken ? [h('div', {class: 'card'}, h('p', {class: 'err'}, `Diqqət: bu testə ${taken} şagird artıq başlayıb. Sualların sayını, sırasını və ya düz cavabları dəyişsən, köhnə nəticələr yanlış hesablana bilər. Dəyişiklikdən sonra "Nəticələr" bölməsində şagirdləri yenidən "Yenilə" ilə qiymətləndir.`))] : []),
+    h('div', {class: 'card'}, title, dur,
       h('div', {}, h('small', 'Giriş vaxtı (bu saatdan əvvəl açılmır, boş = məhdudiyyət yoxdur)')), openIn,
       h('div', {}, h('small', 'Çıxış vaxtı (bu saatdan sonra bağlanır, boş = məhdudiyyət yoxdur)')), closeIn),
     h('div', {class: 'card'}, h('b', 'Ümumi şəkillər (bütün suallara aid)'),
       h('div', {}, h('small', 'İstəyə bağlı. İstədiyin qədər şəkil əlavə edə bilərsən, bir neçəsini birdən də seçmək olur. Şagird bunları testin yuxarısında görür.')),
-      ...multiPicker('📷 Ümumi şəkil əlavə et', commonList)),
+      ...multiPicker('📷 Ümumi şəkil əlavə et', commonList, keep)),
     box,
     h('button', {class: 'sm', onclick: () => add('mc')}, '+ Test sualı'), h('button', {class: 'sm', onclick: () => add('open')}, '+ Açıq sual'),
     h('div', {}, h('button', {onclick: save}, 'Saxla'), h('button', {class: 'sm', onclick: adminHome}, 'Ləğv et')));

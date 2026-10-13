@@ -204,7 +204,7 @@ async function studentHome() {
   ]);
   const now = Date.now() + off;
   const at = {}; a.forEach(d => at[d.data().testId] = d.data());
-  show(top('Testlər'), h('div', {}, h('button', {class: 'sm', onclick: myResults}, 'Nəticələrim'), h('button', {class: 'sm', onclick: classResults}, 'Sinif nəticələri')), ...(t.empty ? [h('p', 'Hələ aktiv test yoxdur.')] : t.docs.map(d => {
+  show(top('Testlər'), h('button', {class: 'sm', onclick: myResults}, 'Nəticələrim'), ...(t.empty ? [h('p', 'Hələ aktiv test yoxdur.')] : t.docs.map(d => {
     const x = d.data(), r = at[d.id];
     const o = x.openAt ? x.openAt.toMillis() : 0, c = x.closeAt ? x.closeAt.toMillis() : 0;
     const notYet = !!o && o > now, closed = !!c && c < now, open = !r || !r.submitted;
@@ -228,36 +228,6 @@ async function myResults() {
   const rows = rowsOf(a.docs.map(d => d.data()), tests);
   show(top('Nəticələrim'), h('button', {class: 'sm', onclick: studentHome}, 'Geri'),
     h('div', {class: 'card'}, rows.length ? progress(rows) : h('p', 'Hələ qiymətləndirilmiş nəticə yoxdur.')));
-}
-
-// Bütün şagirdlərin nəticələri (hər test üzrə sıralama)
-async function classResults() {
-  show(top('Sinif nəticələri'), h('p', 'Yüklənir...'));
-  let t, l;
-  try {
-    [t, l] = await Promise.all([
-      getDocs(query(collection(db, 'tests'), where('published', '==', true))),
-      getDocs(collection(db, 'leaderboard'))
-    ]);
-  } catch (x) {
-    return show(top('Sinif nəticələri'), h('button', {class: 'sm', onclick: studentHome}, 'Geri'),
-      h('p', {class: 'err'}, 'Nəticələr yüklənmədi: ' + (x.code || x.message)));
-  }
-  const by = {};
-  l.forEach(d => { const x = d.data(); (by[x.testId] ||= []).push(x); });
-  show(top('Sinif nəticələri'), h('button', {class: 'sm', onclick: studentHome}, 'Geri'),
-    ...(t.empty ? [h('p', 'Hələ test yoxdur.')] : t.docs.map(d => {
-      const list = (by[d.id] || []).sort((a, b) => b.pct - a.pct || b.total - a.total);
-      let rank = 0, prev = null;
-      return h('div', {class: 'card'}, h('b', d.data().title),
-        list.length ? list.map((x, i) => {
-          if (prev === null || x.pct !== prev) rank = i + 1;
-          prev = x.pct;
-          const mine = x.uid === me.uid;
-          return h('div', {class: 'opt', style: `font-weight:${mine ? 700 : 400};color:${mine ? 'var(--a)' : 'var(--t)'}`},
-            `${rank}. ${x.name} — ${x.pct}% (${x.total}/${x.max} bal)` + (mine ? '  ← sən' : ''));
-        }) : h('p', 'Hələ qiymətləndirilmiş nəticə yoxdur.'));
-    })));
 }
 
 function review(t, r) {
@@ -483,16 +453,8 @@ async function results(id, t) {
         for (const i in inputs) { op[i] = +inputs[i].value || 0; s += op[i]; }
         const rv = {};
         t.questions.forEach((q, i) => { if (q.type == 'mc') rv[i] = {g: ans[i] ?? null, c: key[i]}; });
-        const total = mc + s;
-        await updateDoc(d.ref, {mcScore: mc, openPts: op, total, graded: true, mcReview: rv});
-        // sinif cədvəli üçün qısa surət (şagirdlər bunu görür)
-        try {
-          await setDoc(doc(db, 'leaderboard', d.id), {
-            testId: id, uid: r.uid, name: r.name, title: t.title,
-            total, max, pct: max ? Math.round(total / max * 100) : 0
-          });
-        } catch (x) { alert('Sinif cədvəli yenilənmədi (Firestore qaydasını yoxla): ' + (x.code || x.message)); }
-        alert(`Saxlandı: ${total} / ${max}`);
+        await updateDoc(d.ref, {mcScore: mc, openPts: op, total: mc + s, graded: true, mcReview: rv});
+        alert(`Saxlandı: ${mc + s} / ${max}`);
       };
       return h('div', {class: 'card'}, h('b', r.name),
         h('p', `Giriş: ${fmt(r.startedAt)}  |  Çıxış: ${fmt(r.submittedAt)}`),
